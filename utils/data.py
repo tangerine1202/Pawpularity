@@ -53,7 +53,7 @@ def split_train_val(train_df, val_size=0.2):
         train_subset, val_subset: Split DataFrames
     """
     # Get indices and shuffle them
-    indices = np.random.choice(train_df.index, size=len(train_df), replace=False)
+    indices = np.random.permutation(len(train_df))
 
     # Calculate split point
     val_count = int(len(train_df) * val_size)
@@ -99,20 +99,15 @@ def check_data_integrity(df, base_dir='data'):
 
 
 class CustomDataset(Dataset):
-    def __init__(self, df, transform=None, has_label=True):
+    def __init__(self, df, img_transform=None, has_label=True):
         """
         Args:
             df: DataFrame containing image paths and labels
             transform: Optional transform to be applied on a sample
         """
         self.df = df
-        self.transform = transform
+        self.img_transform = img_transform
         self.has_label = has_label
-
-        self.img_size = (224, 224)
-        log.warning(
-            f"Image size is hardcoded to {self.img_size}. Consider making it configurable."
-        )
 
         self.label_col = 'Pawpularity'
         self.img_path_col = 'image_path'
@@ -153,8 +148,8 @@ class CustomDataset(Dataset):
 
         image = self.load_image(img_path)
 
-        if self.transform:
-            image = self.transform(image)
+        if self.img_transform:
+            image = self.img_transform(image)
 
         if self.has_label:
             return image, data, label
@@ -167,11 +162,5 @@ class CustomDataset(Dataset):
             log.error(f"Failed to load image at {img_path}")
             raise FileNotFoundError(f"Image not found: {img_path}")
 
-        img = cv2.resize(img, self.img_size)
-
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        # change to channel-first
-        img = np.transpose(img, (2, 0, 1))
-        # Normalize to [0, 1]
-        img = img.astype(np.float32) / 255.0
         return img
