@@ -1,0 +1,5 @@
+class_name: null # The class name to be used with eval()
+name: null # Model architecture name
+weights: null # Pretrained weights
+pretrained: true
+freeze_pretrained: true

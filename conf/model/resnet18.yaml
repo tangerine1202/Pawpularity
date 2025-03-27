@@ -1,0 +1,5 @@
+class_name: ResNetModel
+name: ResNet18
+weights: ResNet18_Weights.DEFAULT
+pretrained: true
+freeze_pretrained: true

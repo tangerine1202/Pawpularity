@@ -1,9 +1,11 @@
-from argparse import ArgumentParser
 import logging
 from pathlib import Path
 import random
 import gc
 
+import hydra
+from hydra.utils import to_absolute_path
+from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
 import numpy as np
 import torch
@@ -14,11 +16,17 @@ from torch.optim import AdamW
 from utils.data import load_data, split_train_val, CustomDataset
 from model.baseline import TorchVisionModel, ResNetModel, SwinTransformerModel
 from utils.debug import log_data_info
+from utils.wandb_utils import (
+    init_wandb,
+    watch_model,
+    log_metrics,
+    log_model_artifact,
+    finish as finish_wandb
+)
 
 log = logging.getLogger(__name__)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-log.info(f'Using device: {device}')
 
 
 def loss_fn(outputs, labels):
@@ -57,33 +65,42 @@ def evaluate(model, val_dataloader):
     return val_loss
 
 
-def main(args):
+@hydra.main(version_base=None, config_path="conf", config_name="config")
+def main(cfg: DictConfig):
+    log.info(f'Using device: {device}')
+    log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
-    # Model
-    if args.model.startswith('ResNet'):
-        model_name = 'ResNetModel'
-        model_args = dict(
-            name=args.model,
-            weights=f'{args.model}_Weights.DEFAULT',
-            pretrained=True,
-            freeze_pretrained=True
-        )
-    elif args.model.startswith('Swin'):
-        model_name = 'SwinTransformerModel'
-        model_args = dict(
-            name=args.model,
-            weights=f'{args.model}_Weights.DEFAULT',
-            pretrained=True,
-            freeze_pretrained=False
-        )
-    else:
-        raise NotImplementedError(f'Model {args.model} not implemented')
-    model = eval(model_name)(**model_args).to(device)
-    optimizer = AdamW(model.parameters(), lr=args.learning_rate)
+    # Initialize wandb
+    run = init_wandb(cfg)
+
+    # Set random seeds
+    random.seed(cfg.training.seed)
+    np.random.seed(cfg.training.seed)
+    torch.manual_seed(cfg.training.seed)
+    torch.cuda.manual_seed_all(cfg.training.seed)
+    torch.backends.cudnn.deterministic = True
+
+    # Model instantiation using config
+    model_mapping = {
+        "ResNetModel": ResNetModel,
+        "SwinTransformerModel": SwinTransformerModel,
+    }
+    model_class_name = cfg.model.class_name
+    if model_class_name not in model_mapping:
+        raise ValueError(f"Model class '{model_class_name}' is not recognized.")
+    # Extract model args from config, excluding class_name
+    model_args = {k: v for k, v in dict(cfg.model).items() if k != 'class_name'}
+    model = model_mapping[model_class_name](**model_args).to(device)
+
+    optimizer = AdamW(model.parameters(), lr=cfg.training.lr)
+
+    # Watch model with wandb if enabled
+    watch_model(model, log_freq=cfg.wandb.log_freq)
 
     # Data
-    train_df, test_df = load_data(args.data_dir, check=True)
-    train_df, val_df = split_train_val(train_df, val_size=0.2)
+    data_dir = Path(to_absolute_path(cfg.data.data_dir))
+    train_df, test_df = load_data(data_dir, check=True)
+    train_df, val_df = split_train_val(train_df, val_size=cfg.data.val_size)
     log_data_info(train_df, val_df, test_df)
 
     img_transforms = [
@@ -91,24 +108,23 @@ def main(args):
         v2.ToDtype(torch.float32, scale=True),
         v2.Resize(size=(224, 224), antialias=True),
     ]
-    if args.augmentation == 'TA':
+    if cfg.data.augmentation == 'TA':
         img_transforms += [v2.TrivialAugmentWide()]
-    elif args.augmentation == 'RA':
+    elif cfg.data.augmentation == 'RA':
         img_transforms += [v2.RandAugment()]
-    elif args.augmentation == 'AA_img':
+    elif cfg.data.augmentation == 'AA_img':
         img_transforms += [v2.AutoAugment(v2.AutoAugmentPolicy.IMAGENET)]
-    elif args.augmentation == 'AA_svhn':
+    elif cfg.data.augmentation == 'AA_svhn':
         img_transforms += [v2.AutoAugment(v2.AutoAugmentPolicy.SVHN)]
-    elif args.augmentation == 'AA_cifar10':
+    elif cfg.data.augmentation == 'AA_cifar10':
         img_transforms += [v2.AutoAugment(v2.AutoAugmentPolicy.CIFAR10)]
     else:
-        raise NotImplementedError(f'Augmentation {args.augmentation} not implemented')
-    # CutMix, Mixup https://pytorch.org/vision/0.21/auto_examples/transforms/plot_cutmix_mixup.html#where-to-use-mixup-and-cutmix
+        raise NotImplementedError(f'Augmentation {cfg.data.augmentation} not implemented')
 
     train_ds, val_ds = map(lambda df: CustomDataset(df, img_transform=v2.Compose(img_transforms)), (train_df, val_df))
     train_dataloader = DataLoader(
         train_ds,
-        batch_size=args.batch_size,
+        batch_size=cfg.training.batch_size,
         shuffle=True,
         num_workers=16,
         pin_memory=True,
@@ -116,15 +132,15 @@ def main(args):
     )
     val_dataloader = DataLoader(
         val_ds,
-        batch_size=args.batch_size,
+        batch_size=cfg.training.batch_size,
         shuffle=False,
         num_workers=8,
         pin_memory=True
     )
 
-    with tqdm(total=args.epochs * len(train_dataloader), desc='Training', leave=False) as pbar:
-        for epoch in range(args.epochs):
-            log.info(f'Epoch {epoch + 1}/{args.epochs}')
+    with tqdm(total=cfg.training.epochs * len(train_dataloader), desc='Training', leave=False) as pbar:
+        for epoch in range(cfg.training.epochs):
+            log.info(f'Epoch {epoch + 1}/{cfg.training.epochs}')
 
             train_loss = train(model, train_dataloader, optimizer, pbar) * 100
             val_loss = evaluate(model, val_dataloader) * 100
@@ -133,12 +149,25 @@ def main(args):
             log.info(f'Val   Loss: {val_loss:.4f}')
             pbar.set_postfix({'train_loss': train_loss, 'val_loss': val_loss})
 
+            # Log metrics
+            log_metrics({
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+            })
+
     # Save the model
-    output_dir = Path('output') / f'{args.exp_name}_{args.model}'
+    output_dir = Path(to_absolute_path("output")) / f'{cfg.exp_name}_{cfg.model.name}'
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / 'ckpt.pth'
     torch.save(model.state_dict(), model_path)
     log.info(f'Model saved to {model_path}')
+
+    # Log model as artifact
+    log_model_artifact(model_path, f"model-{cfg.exp_name}")
+
+    # Finish wandb run
+    finish_wandb()
 
     # Clean up CUDA memory
     del model
@@ -149,27 +178,4 @@ def main(args):
 
 
 if __name__ == '__main__':
-    parser = ArgumentParser()
-    parser.add_argument('exp_name', type=str, help='Experiment name')
-    parser.add_argument('-m', '--model', type=str, required=True, help='Model name')
-    parser.add_argument('-aug', '--augmentation', type=str, default='TA', help='Data augmentation method')
-    parser.add_argument('-ep', '--epochs', type=int, default=10, help='Number of epochs for training')
-    parser.add_argument('-lr', '--learning_rate', type=float, default=3e-4, help='Learning rate for the optimizer')
-    parser.add_argument('-bs', '--batch_size', type=int, default=32, help='Batch size for training')
-    parser.add_argument('-seed', '--seed', type=int, default=42)
-    parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
-    parser.add_argument('--data_dir', type=Path, default='data', help='Directory containing the dataset')
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format='[%(asctime)s][%(filename)s:%(lineno)d][%(levelname)s] - %(message)s',
-    )
-
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    torch.backends.cudnn.deterministic = True
-
-    main(args)
+    main()

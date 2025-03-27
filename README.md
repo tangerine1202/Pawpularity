@@ -1,30 +1,27 @@
-# Pawpularity (Team 14)
+# Pawpularity Score Prediction
 
-This project predicts the "Pawpularity" score of pet images from the [PetFinder.my Pawpularity Contest](https://www.kaggle.com/c/petfinder-pawpularity-score) on Kaggle. The score represents how appealing a pet's photo is to potential adopters.
-
-
-## Code Structure
-
-- `main.py` - Main training script
-- `exp.sh` - Helper script to run multiple training experiments
-- `data/` - Contains training and test data:
-  - `train/` - Training images
-  - `test/` - Test images
-  - `train.csv` - Training data
-  - `test.csv` - Test data
-- `model/` - Neural network model implementations
-- `utils/` - Utility scripts:
-  - `data.py` - Dataset loading and preprocessing
-  - `debug.py` - Logging and debugging utilities
-- `inference.py` - Prediction script for submissions
+This project predicts the popularity score of pet photographs using deep learning models.
 
 
 ## Setup
 
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/Pawpularity.git
+cd Pawpularity
+```
+
 ### Prepare Data
 
 1. Download the dataset from [Kaggle](https://www.kaggle.com/c/petfinder-pawpularity-score/data).
+   ```bash
+   kaggle competitions download -c petfinder-pawpularity-score
+   ```
 2. Unzip the dataset to get the `train` and `test` folders, and the `train.csv` and `test.csv` files.
+3. Create a `data/` directory in the project root:
+   ```bash
+   mkdir data
+   ```
 3. Move folders and files to the `data/` directory:
    ```
    data/
@@ -63,51 +60,53 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-
 ## Usage
 
-### Training a Model
-
-Run the following command to train a model:
+### Training
 
 ```bash
-python main.py \
-  <experiment_name> \
-  -m <model_name> \
-  -ep <epochs> \
-  -lr <learning_rate> \
-  -bs <batch_size>
+# Train with a specific model
+python main.py exp_name=my_experiment +model=resnet18
+
+# Customize training parameters
+python main.py exp_name=my_experiment +model=resnet18 training.lr=1e-5 training.epochs=20
+
+# Use Wandb logging
+python main.py exp_name=my_experiment wandb.use_wandb=true
 ```
 
-#### Supported Models
+### Inference
 
-- [Torchvision pre-trained models](https://pytorch.org/vision/main/models.html#classification):
-  - ResNet: `ResNet18`, `ResNet34`, `ResNet50`, etc.
-  - SwinTransformer: `Swin_V2_B`, `Swin_V2_S`, etc.
-
-### Running Multiple Experiments
-
-Use `exp.sh` to run a series of experiments with different augmentation strategies:
-
+Local inference:
 ```bash
-# Make script executable
-chmod +x exp.sh
-
-# Modify exp.sh to change model, epochs, learning rate, or batch size
-# Run all experiments
-./exp.sh
-```
-
-### Test on Inference
-
-Evaluate the inference pipeline using randomly generated test data:
-
-```bash
-# Modify the variables in inference.py
 python inference.py
 ```
 
+For Kaggle:
+1. Set `IN_KAGGLE = True` in inference.py
+2. Copy-paste the inference.py code into a Kaggle script
+3. Upload necessary model files (i.e. `utils/data.py`, `model/baselines.py`) to Kaggle dataset named `kaggle-files`.
+4. Run script in Kaggle.
 
-## Submit to Kaggle
 
-Submission instructions will be added soon.
+## Configuration
+
+This project uses Hydra for configuration management:
+
+- `conf/config.yaml`: Base configuration
+- `conf/model/resnet.yaml`: ResNet model configuration
+- `conf/model/swin.yaml`: Swin Transformer configuration
+
+### Project Structure
+
+- `main.py` - Main training script
+- `conf/` - Configuration files
+- `data/` - Contains training and test data:
+  - `train/` - Training images
+  - `test/` - Test images
+  - `train.csv` - Training data
+  - `test.csv` - Test data
+- `model/` - Neural network model implementations
+- `utils/` - Utility scripts
+- `inference.py` - Prediction script for submissions
+- `exp.sh` - Helper script to run multiple training experiments

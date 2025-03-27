@@ -1,0 +1,33 @@
+defaults:
+  - model/default
+
+# Experiment name
+exp_name: default_experiment
+
+# Model settings
+# see model/default.yaml
+
+# Training settings
+training:
+  epochs: 10
+  lr: 3.0e-5
+  batch_size: 32
+  seed: 42
+
+# Data settings
+data:
+  data_dir: data
+  augmentation: TA
+  val_size: 0.2
+
+# Wandb settings
+wandb:
+  # Set to false to disable wandb and use console logging instead
+  use_wandb: false
+  project: Pawpularity
+  log_freq: 100
+
+# Inference settings (used by inference.py)
+inference:
+  model_weight: null # Will be set at runtime
+  output_dir: null # Will be set at runtime
