@@ -1,12 +1,16 @@
 import logging
-import wandb
 from pathlib import Path
 import time
 
+from omegaconf import OmegaConf
+import wandb
+
 logger = logging.getLogger(__name__)
+
 
 class ConsoleLogger:
     """Simple console logger for when wandb is disabled."""
+
     def __init__(self, project_name, experiment_name):
         self.project_name = project_name
         self.experiment_name = experiment_name
@@ -63,6 +67,7 @@ class ConsoleLogger:
 # Global variable to store the active logger (wandb or console)
 active_logger = None
 
+
 def init_wandb(config):
     """Initialize wandb or fallback to console logger."""
     global active_logger
@@ -79,17 +84,18 @@ def init_wandb(config):
     wandb.init(
         project=config.wandb.project,
         name=config.exp_name,
-        config=dict(config),
+        config=OmegaConf.to_container(config, resolve=True, throw_on_missing=True),
     )
     active_logger = wandb.run
     return wandb.run
+
 
 def watch_model(model, log_freq=100):
     """Set wandb to watch the model training."""
     if wandb.run is None:
         return
-
     wandb.watch(model, log="all", log_freq=log_freq)
+
 
 def log_metrics(metrics, step=None):
     """Log metrics to wandb or console."""
@@ -100,6 +106,7 @@ def log_metrics(metrics, step=None):
     elif active_logger is not None:
         active_logger.log(metrics, step=step)
 
+
 def log_model_artifact(model_path, artifact_name):
     """Log model as an artifact."""
     if wandb.run is None:
@@ -109,6 +116,7 @@ def log_model_artifact(model_path, artifact_name):
     artifact = wandb.Artifact(artifact_name, type="model")
     artifact.add_file(str(model_path))
     wandb.log_artifact(artifact)
+
 
 def finish():
     """Finish the wandb run or console logger."""

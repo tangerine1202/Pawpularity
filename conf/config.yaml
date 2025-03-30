@@ -1,4 +1,5 @@
 defaults:
+  - _self_
   - model/default
 
 # Experiment name
@@ -10,15 +11,16 @@ exp_name: default_experiment
 # Training settings
 training:
   epochs: 10
-  lr: 3.0e-5
+  lr: 5.0e-5
   batch_size: 32
   seed: 42
 
 # Data settings
 data:
   data_dir: data
-  augmentation: TA
   val_size: 0.2
+  augmentation: RA
+  use_depth: false
 
 # Wandb settings
 wandb:
