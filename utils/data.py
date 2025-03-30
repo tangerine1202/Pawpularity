@@ -6,6 +6,8 @@ import pandas as pd
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from transformers import pipeline
+from PIL import Image
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +101,8 @@ def check_data_integrity(df, base_dir='data'):
 
 
 class CustomDataset(Dataset):
-    def __init__(self, df, img_transform=None, has_label=True):
+    def __init__(self, df, img_transform=None, has_label=True,
+                 use_depth=False):
         """
         Args:
             df: DataFrame containing image paths and labels
@@ -108,6 +111,7 @@ class CustomDataset(Dataset):
         self.df = df
         self.img_transform = img_transform
         self.has_label = has_label
+        self.use_depth = use_depth
 
         self.label_col = 'Pawpularity'
         self.img_path_col = 'image_path'
@@ -130,6 +134,11 @@ class CustomDataset(Dataset):
         else:
             self.labels = None
 
+        if self.use_depth:
+            self.depth_pipe = pipeline(task="depth-estimation",
+                                       model="depth-anything/Depth-Anything-V2-Small-hf",
+                                       use_fast=True)
+
     @staticmethod
     def normalize_labels(labels):
         return labels / 100
@@ -148,6 +157,10 @@ class CustomDataset(Dataset):
 
         image = self.load_image(img_path)
 
+        if self.use_depth:
+            depth = self._get_depth(img_path)
+            image = np.concatenate((image, depth[..., None]), axis=-1)
+
         if self.img_transform:
             image = self.img_transform(image)
 
@@ -164,3 +177,11 @@ class CustomDataset(Dataset):
 
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         return img
+
+    def _get_depth(self, img_path):
+        with Image.open(img_path) as img:
+            # TODO: rewrite in collate_fn to utilize batch processing
+            depth = self.depth_pipe(img)['depth']
+            depth = np.array(depth)  # [0-255]
+            depth = depth.astype(np.float32) / 255.0  # [0-1]
+        return depth
