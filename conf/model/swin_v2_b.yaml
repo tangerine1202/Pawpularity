@@ -1,0 +1,5 @@
+class_name: SwinTransformerModel
+name: Swin_V2_B
+weights: Swin_V2_B_Weights.DEFAULT
+pretrained: true
+freeze_pretrained: true
