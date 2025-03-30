@@ -1,11 +1,11 @@
 IN_KAGGLE = False
 MODEL_CLASS_NAME = 'SwinTransformerModel'
-MODEL_NAME = 'Swin_V2_T'
-MODEL_CKPT = 'ckpt.pth'
+MODEL_NAME = 'Swin_V2_B'
+MODEL_CKPT = 'output/0329-AugRA_Swin_V2_B/ckpt.pth' if not IN_KAGGLE else 'ckpt.pth'
 # Only used in Kaggle
 KAGGLE_DIR = 'kaggle-files'
 
-MODEL_WEIGHT = f'/kaggle/input/{KAGGLE_DIR}/{MODEL_CKPT}' if IN_KAGGLE else f'output/{MODEL_CKPT}'
+MODEL_WEIGHT = f'/kaggle/input/{KAGGLE_DIR}/{MODEL_CKPT}' if IN_KAGGLE else f'{MODEL_CKPT}'
 CODE_PATH = f'/kaggle/input/{KAGGLE_DIR}' if IN_KAGGLE else None
 DATA_DIR = '/kaggle/input/petfinder-pawpularity-score' if IN_KAGGLE else 'data/'
 OUTPUT_DIR = './' if IN_KAGGLE else 'output/'

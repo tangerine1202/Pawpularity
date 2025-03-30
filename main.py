@@ -12,9 +12,10 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 from torch.optim import AdamW
+import torch.multiprocessing as mp
 
 from utils.data import load_data, split_train_val, CustomDataset
-from model.baseline import TorchVisionModel, ResNetModel, SwinTransformerModel
+from model.baseline import ResNetModel, SwinTransformerModel
 from utils.debug import log_data_info
 from utils.wandb_utils import (
     init_wandb,
@@ -37,6 +38,8 @@ def loss_fn(outputs, labels):
 
 def train(model, train_dataloader, optimizer, pbar):
     accumulated_train_loss = 0
+    accumulated_se = np.array([])
+
     model.train()
     for batch in train_dataloader:
         images, data, labels = map(lambda x: x.to(device), batch)
@@ -45,24 +48,42 @@ def train(model, train_dataloader, optimizer, pbar):
         loss = loss_fn(outputs, labels)
         loss.backward()
         optimizer.step()
+
         accumulated_train_loss += loss.item()
+        accumulated_se = np.append(accumulated_se, ((outputs - labels) ** 2).detach().cpu().numpy())
+        pbar.set_postfix({'loss': loss.item(), 'rmse': np.sqrt(accumulated_se.mean())})
         pbar.update(1)
-    training_loss = accumulated_train_loss / len(train_dataloader)
-    return training_loss
+
+    info = {
+        'loss': accumulated_train_loss / len(train_dataloader),
+        'rmse': np.sqrt(accumulated_se.mean()).item(),
+    }
+    return info
 
 
 def evaluate(model, val_dataloader):
     model.eval()
     with torch.inference_mode():
         accumulated_val_loss = 0
-        for batch in tqdm(val_dataloader, desc='Validation', leave=False):
+        accumulated_se = np.array([])
+
+        pbar = tqdm(total=len(val_dataloader), desc='Validation')
+        for batch in val_dataloader:
             images, data, labels = map(lambda x: x.to(device), batch)
 
             outputs = model(images)
             val_loss = loss_fn(outputs, labels)
+
             accumulated_val_loss += val_loss.item()
-    val_loss = accumulated_val_loss / len(val_dataloader)
-    return val_loss
+            accumulated_se = np.append(accumulated_se, ((outputs - labels) ** 2).detach().cpu().numpy())
+            pbar.set_postfix({'loss': val_loss.item(), 'rmse': np.sqrt(accumulated_se.mean())})
+            pbar.update(1)
+
+    info = {
+        'loss': accumulated_val_loss / len(val_dataloader),
+        'rmse': np.sqrt(accumulated_se.mean()).item(),
+    }
+    return info
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -103,12 +124,19 @@ def main(cfg: DictConfig):
     train_df, val_df = split_train_val(train_df, val_size=cfg.data.val_size)
     log_data_info(train_df, val_df, test_df)
 
-    img_transforms = [
+    val_img_transforms = [
         v2.ToImage(),
         v2.ToDtype(torch.float32, scale=True),
         v2.Resize(size=(224, 224), antialias=True),
     ]
-    if cfg.data.augmentation == 'TA':
+    img_transforms = [
+        v2.ToImage(),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Resize(size=(448, 448), antialias=True),
+    ]
+    if cfg.data.augmentation is None:
+        pass
+    elif cfg.data.augmentation == 'TA':
         img_transforms += [v2.TrivialAugmentWide()]
     elif cfg.data.augmentation == 'RA':
         img_transforms += [v2.RandAugment()]
@@ -120,8 +148,21 @@ def main(cfg: DictConfig):
         img_transforms += [v2.AutoAugment(v2.AutoAugmentPolicy.CIFAR10)]
     else:
         raise NotImplementedError(f'Augmentation {cfg.data.augmentation} not implemented')
+    img_transforms += [
+        v2.Resize(size=(224, 224), antialias=True),
+    ]
 
-    train_ds, val_ds = map(lambda df: CustomDataset(df, img_transform=v2.Compose(img_transforms)), (train_df, val_df))
+    mp.set_start_method('spawn')
+    train_ds = CustomDataset(
+        train_df,
+        img_transform=v2.Compose(img_transforms),
+        use_depth=cfg.data.use_depth,
+    )
+    val_ds = CustomDataset(
+        val_df,
+        img_transform=v2.Compose(val_img_transforms),
+        use_depth=cfg.data.use_depth,
+    )
     train_dataloader = DataLoader(
         train_ds,
         batch_size=cfg.training.batch_size,
@@ -138,33 +179,37 @@ def main(cfg: DictConfig):
         pin_memory=True
     )
 
-    with tqdm(total=cfg.training.epochs * len(train_dataloader), desc='Training', leave=False) as pbar:
-        for epoch in range(cfg.training.epochs):
-            log.info(f'Epoch {epoch + 1}/{cfg.training.epochs}')
+    pbar = tqdm(total=cfg.training.epochs * len(train_dataloader), desc='Training')
+    for epoch in range(cfg.training.epochs):
+        log.info(f'Epoch {epoch + 1}/{cfg.training.epochs}')
 
-            train_loss = train(model, train_dataloader, optimizer, pbar) * 100
-            val_loss = evaluate(model, val_dataloader) * 100
+        train_info = train(model, train_dataloader, optimizer, pbar)
+        val_info = evaluate(model, val_dataloader)
 
-            log.info(f'Train Loss: {train_loss:.4f}')
-            log.info(f'Val   Loss: {val_loss:.4f}')
-            pbar.set_postfix({'train_loss': train_loss, 'val_loss': val_loss})
-
-            # Log metrics
-            log_metrics({
-                "epoch": epoch + 1,
-                "train_loss": train_loss,
-                "val_loss": val_loss,
-            })
+        info = {
+            "epoch": epoch + 1,
+            **{'train_' + k: v for k, v in train_info.items()},
+            **{'val_' + k: v for k, v in val_info.items()},
+        }
+        msg = '\n'.join([f'{k}: {v:.4f}' for k, v in info.items()])
+        log.info(msg)
+        log_metrics(info)
 
     # Save the model
     output_dir = Path(to_absolute_path("output")) / f'{cfg.exp_name}_{cfg.model.name}'
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / 'ckpt.pth'
+    eval_path = output_dir / 'eval.txt'
     torch.save(model.state_dict(), model_path)
     log.info(f'Model saved to {model_path}')
+    with open(eval_path, 'w') as f:
+        for k, v in info.items():
+            f.write(f'{k}: {v:.4f}\n')
+        f.write(f'Config: {OmegaConf.to_yaml(cfg)}\n')
+    log.info(f'Evaluation saved to {eval_path}')
 
     # Log model as artifact
-    log_model_artifact(model_path, f"model-{cfg.exp_name}")
+    # log_model_artifact(model_path, f"model-{cfg.exp_name}")
 
     # Finish wandb run
     finish_wandb()
